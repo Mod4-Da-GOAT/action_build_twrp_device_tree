@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       IMG_URL:
-        description: 'Link to boot/recovery image'
+        description: 'Link to boot or recovery image (.img or .img.lz4)'
         required: true
         default: ''
 
@@ -20,20 +20,39 @@ jobs:
     - name: Prepare the environment
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y python3 python3-pip cpio wget zip aria2
+        sudo apt-get install -y python3 python3-pip cpio wget zip aria2 lz4 file git bash
         pip install --upgrade pip
         pip install twrpdtgen
-        mkdir -p dt
+        mkdir -p dt img
 
     - name: Download boot/recovery image
       run: |
         echo "Downloading image from: ${{ github.event.inputs.IMG_URL }}"
+        cd img
         aria2c -x 16 -s 16 "${{ github.event.inputs.IMG_URL }}"
         ls -lh
 
+    - name: Decompress .lz4 if needed
+      run: |
+        cd img
+        IMG_FILE=$(ls)
+        if file "$IMG_FILE" | grep -q "LZ4 compressed"; then
+          echo "Detected LZ4 image, decompressing..."
+          lz4 -d "$IMG_FILE" "${IMG_FILE%.lz4}"
+          rm "$IMG_FILE"
+        fi
+        ls -lh
+        cd ..
+
     - name: Generate TWRP device tree
       run: |
-        python3 -m twrpdtgen -o dt/ *.img
+        IMG_PATH=$(find img -type f -name "*.img" | head -n 1)
+        echo "Using image: $IMG_PATH"
+        if [ -z "$IMG_PATH" ]; then
+          echo "❌ No valid .img found, aborting."
+          exit 1
+        fi
+        python3 -m twrpdtgen -o dt/ "$IMG_PATH"
 
     - name: Create device tree ZIP
       run: |
