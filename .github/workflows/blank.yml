@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       IMG_URL:
-        description: 'Link to boot or recovery image (.img or .img.lz4)'
+        description: 'Link to boot or recovery image (.img, .img.lz4, .tar.md5, .tar)'
         required: true
         default: ''
 
@@ -17,48 +17,112 @@ jobs:
     - name: Check Out repository
       uses: actions/checkout@v4
 
-    - name: Prepare the environment
+    - name: Prepare environment
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y python3 python3-pip cpio wget zip aria2 lz4 file git bash
+        sudo apt-get install -y python3 python3-pip cpio wget zip aria2 lz4 file git bash tar curl unzip
         pip install --upgrade pip
         pip install twrpdtgen
-        mkdir -p dt img
+        mkdir -p dt img tools
 
-    - name: Download boot/recovery image
+    - name: Download MagiskBoot (for Samsung ELF images)
       run: |
-        echo "Downloading image from: ${{ github.event.inputs.IMG_URL }}"
-        cd img
-        aria2c -x 16 -s 16 "${{ github.event.inputs.IMG_URL }}"
-        ls -lh
-
-    - name: Decompress .lz4 if needed
-      run: |
-        cd img
-        IMG_FILE=$(ls)
-        if file "$IMG_FILE" | grep -q "LZ4 compressed"; then
-          echo "Detected LZ4 image, decompressing..."
-          lz4 -d "$IMG_FILE" "${IMG_FILE%.lz4}"
-          rm "$IMG_FILE"
+        cd tools
+        # Get the latest magiskboot from the Magisk repo
+        curl -L -o magiskboot.zip https://github.com/topjohnwu/magiskboot/releases/latest/download/magiskboot.zip || true
+        if [ ! -f magiskboot.zip ]; then
+          echo "MagiskBoot release archive not found, falling back to building manually..."
+          curl -L -o magiskboot https://raw.githubusercontent.com/topjohnwu/magisk/master/scripts/magiskboot
+          chmod +x magiskboot
+        else
+          unzip -o magiskboot.zip || true
+          chmod +x magiskboot || true
         fi
         ls -lh
+        cd ..
+
+    - name: Download firmware/image
+      run: |
+        echo "Downloading from: ${{ github.event.inputs.IMG_URL }}"
+        cd img
+        aria2c -x 16 -s 16 "${{ github.event.inputs.IMG_URL }}" || exit 1
+        ls -lh
+        cd ..
+
+    - name: Extract/decompress image if needed
+      run: |
+        cd img
+        FILE=$(ls | head -n 1)
+        echo "Processing file: $FILE"
+
+        # Handle tar.md5 or tar
+        if [[ "$FILE" == *.tar.md5 || "$FILE" == *.tar ]]; then
+          echo "Extracting from TAR..."
+          tar -xvf "$FILE" || exit 1
+          rm "$FILE"
+        fi
+
+        # Handle .lz4
+        for f in *.lz4; do
+          if [ -f "$f" ]; then
+            echo "Decompressing $f..."
+            lz4 -d "$f" "${f%.lz4}" && rm "$f"
+          fi
+        done
+
+        echo "Files after extraction:"
+        ls -lh
+        cd ..
+
+    - name: Detect and fix ELF boot images
+      run: |
+        cd img
+        FILE=$(find . -type f -name "*.img" | head -n 1)
+        if [ -z "$FILE" ]; then
+          echo "❌ No .img file found."
+          exit 1
+        fi
+
+        echo "Checking image type..."
+        file "$FILE"
+        if file "$FILE" | grep -q "ELF"; then
+          echo "⚙️ ELF detected — using magiskboot to unpack..."
+          ../tools/magiskboot unpack "$FILE" || {
+            echo "❌ magiskboot failed to unpack ELF image."
+            exit 1
+          }
+          if [ -f "kernel" ] && [ -f "ramdisk.cpio" ]; then
+            echo "Successfully unpacked ELF image."
+            # Rebuild into a standard boot.img
+            ../tools/magiskboot repack "$FILE" fixed_boot.img || exit 1
+            mv fixed_boot.img fixed.img
+            rm -f kernel ramdisk.cpio
+            echo "✅ Repacked ELF image into fixed.img"
+          else
+            echo "❌ magiskboot unpack didn't produce valid files."
+            exit 1
+          fi
+        fi
         cd ..
 
     - name: Generate TWRP device tree
       run: |
         IMG_PATH=$(find img -type f -name "*.img" | head -n 1)
-        echo "Using image: $IMG_PATH"
+        echo "Generating device tree from $IMG_PATH"
         if [ -z "$IMG_PATH" ]; then
-          echo "❌ No valid .img found, aborting."
+          echo "❌ No valid image found to process."
           exit 1
         fi
-        python3 -m twrpdtgen -o dt/ "$IMG_PATH"
+        python3 -m twrpdtgen -o dt/ "$IMG_PATH" || {
+          echo "❌ twrpdtgen failed. Printing diagnostics..."
+          ls -lh img
+          file img/*
+          exit 1
+        }
 
-    - name: Create device tree ZIP
+    - name: Create ZIP
       run: |
-        cd dt
-        zip -r ../DeviceTree.zip .
-        cd ..
+        zip -r DeviceTree.zip dt
 
     - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v1
@@ -66,6 +130,6 @@ jobs:
         files: DeviceTree.zip
         name: TWRP_Device_Tree-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
-        body: Generated TWRP device tree
+        body: Generated TWRP device tree (with ELF handling)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
