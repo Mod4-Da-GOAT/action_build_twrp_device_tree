@@ -49,31 +49,6 @@ jobs:
         ls -lh
         cd ..
 
-    - name: Extract/decompress image if needed
-      run: |
-        cd img
-        FILE=$(ls | head -n 1)
-        echo "Processing file: $FILE"
-
-        # Handle tar.md5 or tar
-        if [[ "$FILE" == *.tar.md5 || "$FILE" == *.tar ]]; then
-          echo "Extracting from TAR..."
-          tar -xvf "$FILE" || exit 1
-          rm "$FILE"
-        fi
-
-        # Handle .lz4
-        for f in *.lz4; do
-          if [ -f "$f" ]; then
-            echo "Decompressing $f..."
-            lz4 -d "$f" "${f%.lz4}" && rm "$f"
-          fi
-        done
-
-        echo "Files after extraction:"
-        ls -lh
-        cd ..
-
     - name: Detect and fix ELF boot images
       run: |
         cd img
