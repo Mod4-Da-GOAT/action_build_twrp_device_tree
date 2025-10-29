@@ -3,8 +3,8 @@ name: Make TWRP Device
 on:
   workflow_dispatch:
     inputs:
-      IMG_URL:    
-        description: 'IMG_URL'
+      IMG_URL:
+        description: 'Link to boot/recovery image'
         required: true
         default: ''
 
@@ -12,36 +12,41 @@ jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Check Out
+    - name: Check Out repository
       uses: actions/checkout@v4
-      
+
     - name: Prepare the environment
       run: |
-        sudo apt update
-        sudo apt -y install python python3 python-pip python3-pip cpio wget
-        pip3 install twrpdtgen
-        mkdir dt
-      
-    - name: Download boot or recovery img
+        sudo apt-get update -qq
+        sudo apt-get install -y python3 python3-pip cpio wget zip aria2
+        pip install --upgrade pip
+        pip install twrpdtgen
+        mkdir -p dt
+
+    - name: Download boot/recovery image
       run: |
-        aria2c "${{ github.event.inputs.IMG_URL }}"
-        ls
-      
-    - name: Start build
+        echo "Downloading image from: ${{ github.event.inputs.IMG_URL }}"
+        aria2c -x 16 -s 16 "${{ github.event.inputs.IMG_URL }}"
+        ls -lh
+
+    - name: Generate TWRP device tree
       run: |
         python3 -m twrpdtgen -o dt/ *.img
-    - name: ZIP device tree
+
+    - name: Create device tree ZIP
       run: |
-        zip -r DeviceTree.zip ./dt
-    - name: Upload to Release
+        cd dt
+        zip -r ../DeviceTree.zip .
+        cd ..
+
+    - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v1
       with:
-        files: |
-          ./DeviceTree.zip
+        files: DeviceTree.zip
         name: TWRP_Device_Tree-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
-        body: DeviceTree for twrp
+        body: Generated TWRP device tree
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
